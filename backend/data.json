@@ -1,0 +1,40 @@
+ {
+        "data":[
+        {
+            "id": 1,
+            "name": "Rahul Sharma",
+            "phone": "9876543210",
+            "status": "New"
+        },
+        {
+            "id": 2,
+            "name": "Anjali Verma",
+            "phone": "9876543211",
+            "status": "Follow-up"
+        },
+        {
+            "id": 3,
+            "name": "Deva",
+            "phone": "9876543121",
+            "status": "Follow-up"
+        },
+        {
+            "id": 4,
+            "name": "IUC",
+            "phone": "9876543000",
+            "status": "Follow-up"
+        },
+        {
+            "id": 5,
+            "name": "Vijay",
+            "phone": "9876540012",
+            "status": "Follow-up"
+        }
+        ],
+        "pagination": {
+            "page": 1,
+            "limit": 3,
+            "total" : 5,
+            "totalPages": 10
+    }
+}
