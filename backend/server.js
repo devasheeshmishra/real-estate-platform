@@ -1,5 +1,7 @@
 const express = require('express');
 
+const pool = require('./db');
+
 const app = express();
 
 const PORT = 5000;
@@ -8,277 +10,321 @@ const PORT = 5000;
 
 app.use(express.json());
 
-// Temporary data for leads API
-
-let leads = [ 
-        {
-            id: 1,
-            name: "Rahul Sharma",
-            phone: "9876543210",
-            status: "New"
-        },
-        {
-            id: 2,
-            name: "Anjali Verma",
-            phone: "9876543211",
-            status: "Follow-up"
-        },
-        {
-            id: 3,
-            name: "Deva",
-            phone: "9876543121",
-            status: "Follow-up"
-        },
-        {
-            id: 4,
-            name: "IUC",
-            phone: "9876543000",
-            status: "Follow-up"
-        },
-        {
-            id: 5,
-            name: "Vijay",
-            phone: "9876540012",
-            status: "Follow-up"
-        }
-];
-
 // ========================================
 // GET ALL LEADS
 // ========================================
 
-app.get("/api/leads", (req, res) => {
+app.get("/api/leads", async (req, res) => {
+    try {
+        const {
+            status,
+            search,
+            sort,
+            order,
+            page = "1",
+            limit = "100"
+        } = req.query;
 
-    // Query parameters: 
-    const { status, search, sort, page, limit } = req.query;
+        const pageNumber = Number(page);
+        const limitNumber = Number(limit);
 
-    let result = leads;
-
-    //Filter leads based on status if provided
-    if (status) { 
-        result = result.filter(
-            (lead) => lead.status.toLowerCase() === status.toLowerCase()
-        );
-    }
-
-    // Search leads based on name if provided
-    if (search) {
-        const searchText = search.toLowerCase();
-
-        result = result.filter(
-            (lead) => 
-                lead.name.toLowerCase().includes(searchText) ||
-                lead.phone.includes(search)
-        );
-    }
-
-    // ========================================
-    // SORT VALIDATION
-    // ========================================
-
-    const allowedSortFields = ["name"];
-
-    if (sort && !allowedSortFields.includes(sort)) {
-        return res.status(400).json({
-            message: "Invalid sort field."
-        });
-    }
-
-    // ========================================
-    // SORT LEADS
-    // ========================================
-
-    if (sort === "name") {
-        result = [...result].sort(
-            (a, b) => a.name.localeCompare(b.name)
-        );
-    }
-
-    // Production-style pagination response:
-    const total = result.length;
-
-    // ========================================
-    // PAGINATION VALIDATION
-    // ========================================
-
-    const pageNumber = page === undefined ? 1 : Number(page);
-    const limitNumber = limit === undefined ? 10 : Number(limit);
-    const MAX_LIMIT = 100;
-
-    if (
-        !Number.isInteger(pageNumber) ||
-        pageNumber < 1
-    ) {
-        return res.status(400).json({
-            message: "Page must be a positive integer"
-        });
-    }
-
-    if (
-        !Number.isInteger(limitNumber) ||
-        limitNumber < 1
-        || limitNumber > MAX_LIMIT
-    ) {
-        return res.status(400).json({
-            message: "Limit must be a positive integer and less than or equal to 100"
-        });
-    }
-    
-    // ========================================
-    // PAGINATION
-    // ========================================
-    
-    const startIndex = (pageNumber - 1) * limitNumber;
-    console.log("pageNumber", pageNumber, "Start Index:", startIndex, "Limit Number:", limitNumber);
-    const paginatedResult = result.slice(
-        startIndex,
-        startIndex + limitNumber
-    );
-
-    res.status(200).json({
-        data: paginatedResult,
-        pagination: {
-            page: pageNumber,
-            limit: limitNumber,
-            total: total,
-            totalPages: Math.ceil(total / limitNumber)
+        // Pagination validation
+        if (!Number.isInteger(pageNumber) || pageNumber <= 0) {
+            return res.status(400).json({
+                message: "Page must be a positive integer"
+            });
         }
-    });
+
+        if (
+            !Number.isInteger(limitNumber) ||
+            limitNumber <= 0 ||
+            limitNumber > 100
+        ) {
+            return res.status(400).json({
+                message: "Limit must be a positive integer or less than or equal to 100"
+            });
+        }
+
+        let baseQuery = "SELECT *  FROM leads";
+        let countQuery = "SELECT COUNT(*) AS total FROM leads";
+
+        const filterValues = [];
+        const conditions = [];
+
+        // Status filter
+        if (status) {
+            filterValues.push(status);
+
+            conditions.push(
+                `status ILIKE $${filterValues.length}`
+            );
+        }
+
+        // Search by name or phone
+        if (search) {
+            filterValues.push(`%${search}%`);
+
+            conditions.push(`
+                (
+                    name ILIKE $${filterValues.length}
+                    OR phone LIKE $${filterValues.length}
+                )
+            `);
+        }
+
+        // WHERE clause
+        let whereClause = "";
+
+        if (conditions.length > 0) {
+            whereClause = " WHERE " + conditions.join(" AND ");
+        }
+
+        baseQuery += whereClause;
+        countQuery += whereClause;
+
+        // Sorting
+        const allowedSortFields = ["id", "name", "status"];
+
+        if (sort) {
+            if (!allowedSortFields.includes(sort)) {
+                return res.status(400).json({
+                    message: "Invalid sort field."
+                });
+            }
+
+            const sortOrder =
+                order && order.toLowerCase() === "desc"
+                 ? "DESC"
+                 : "ASC";
+
+                baseQuery += ` ORDER BY ${sort} ${sortOrder}`;
+        } else {
+            baseQuery += " ORDER BY id ASC";
+        }
+
+       // Pagination
+        const offset = (pageNumber - 1) * limitNumber;
+
+        const dataValues = [
+            ...filterValues,
+            limitNumber,
+            offset
+        ];
+
+        const limitParameter = filterValues.length + 1;
+        const offsetParameter = filterValues.length + 2;
+
+        baseQuery += `
+            LIMIT $${limitParameter}
+            OFFSET $${offsetParameter}
+        `;
+
+        // Run both queries
+        const [dataResult, countResult] = await Promise.all([
+            pool.query(baseQuery, dataValues),
+            pool.query(countQuery, filterValues)
+        ]);
+
+        const totalRecords = Number(countResult.rows[0].total);
+
+        const totalPages = Math.ceil(
+            totalRecords / limitNumber
+        );
+
+        res.status(200).json({
+            data: dataResult.rows,
+            pagination: {
+                page: pageNumber,
+                limit: limitNumber,
+                totalRecords,
+                totalPages
+            }
+        });
+
+    } catch (error) {
+        console.error("Database query failed: ", error.message);
+
+        res.status(500).json({
+            message: "Failed to fetch leads"
+        });
+    }
 });
-
-
 
 // ========================================
 // GET SINGLE LEAD
 // ========================================
 
-app.get("/api/leads/:id", (req, res) => {
+app.get("/api/leads/:id", async (req, res) => {
+    try {
+        const id = Number(req.params.id);
 
-    
-    const id = Number(req.params.id);
+        const result = await pool.query(
+            "SELECT * FROM leads WHERE id = $1",
+            [id]
+        );
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                message: "Lead not found"
+            });
+        }
 
-    const lead = leads.find((lead) =>lead.id === id);
+        res.status(200).json(result.rows[0]);
+    }  catch (error) {
+        console.error("Database query failed:", error.message);
 
-    if (!lead) {
-        return res.status(404).json({
-            message: "Lead not found"
+        res.status(500).json({
+            message: "Failed to fetch lead"
         });
     }
-
-    res.status(200).json(lead);
 });
 
 // ========================================
 // CREATE NEW LEAD
 // ========================================
 
-app.post("/api/leads", (req, res) => {
-    const { name, phone, status } = req.body;
-    // console.log("Testing here...", req.body);
+app.post("/api/leads", async(req, res) => {
+    try {
+        const {name, phone, status} = req.body;
 
-    if (!name || !phone || !status) {
-        return res.status(400).json({
-            message: "Name, phone, and status are required"
-        });
+        // Validation
+        if (!name || !phone || !status) {
+            return res.status(400).json({
+                message: "Name, phone, and status are required"
+            });
+        }
+
+        const result = await pool.query(
+            `INSERT INTO leads (name, phone, status)
+            VALUES ($1, $2, $3)
+            RETURNING *`,
+            [name, phone, status]
+        );
+
+        res.status(201).json(result.rows[0]);
+
+    } catch (error) {
+        console.error("Database query failed:", error.message);
+        res.status(500).json({
+            message: "Failed to create lead"
+        })
     }
-
-    const newLead = {
-        id: Date.now(),
-        name,
-        phone,
-        status
-    };
-
-    leads.push(newLead);
-
-    res.status(201).json(newLead);
 });
 
 // ========================================
 // UPDATE LEAD
 // ========================================
 
-app.put("/api/leads/:id", (req, res) => {
-    const id = Number(req.params.id);
+app.put("/api/leads/:id", async (req, res) => {
+    try {
+        const id = Number(req.params.id);
 
-    const lead = leads.find((lead) => lead.id === id);
+        const { name, phone, status } = req.body;
 
-    if (!lead) {
-        return res.status(404).json({
-            message: "Lead not found"
-        })
-    }
+        // Check whether at least one field is provided for update
+        if (
+            name === undefined &&
+            phone === undefined &&
+            status === undefined
+        ) {
+            return res.status(400).json({
+                message: "At least one field is required to update"
+            });
+        }
 
-    const { name, phone, status } = req.body;
+        // Validation for name
+        if (name !== undefined && name.trim() === "") {
+            return res.status(400).json({
+                message: "Name cannot be empty"
+            })
+        }
 
-    // Validation name
-    if (name !== undefined && name.trim() === "") {
-        return res.status(400).json({
-            message: "Name cannot be empty"
+        // Validation for phone
+        if (phone !== undefined && !/^\d{10}$/.test(phone)) {
+            return res.status(400).json({
+                message: "Phone must be a 10-digit number"
+            });
+        }
+
+        // Validation for status
+        const allowedStatuses = [
+            "New",
+            "Follow-up",
+            "Converted",
+            "Lost"
+        ];
+
+        if (
+            status !== undefined &&
+            !allowedStatuses.includes(status)
+        ) {
+            return res.status(400).json({
+                message: "Invalid status."
+            });
+        }
+
+        const result = await pool.query(
+            `UPDATE leads
+            SET
+                name = COALESCE($1, name),
+                phone = COALESCE($2, phone),
+                status = COALESCE($3, status)
+            WHERE id = $4
+            RETURNING *`,
+            [name, phone, status, id]
+        );
+
+        if (result.rows.length === 0 ) {
+            return res.status(404).json({
+                message: "Lead not found."
+            });
+        }
+
+        res.status(200).json(result.rows[0]);
+
+    } catch (error) {
+        console.error("Database query failed:", error.message);
+
+        res.status(500).json({
+            message: "Failed to update lead"
         });
+
     }
-
-    // Validation phone
-    if (phone !== undefined && !/^\d{10}$/.test(phone)) {
-        return res.status(400).json({
-            message: "Phone must be a 10-digit number"
-        });
-    }
-
-    // Validation status
-    const allowedStatuses = [
-        "New",
-        "Follow-up",
-        "Converted",
-        "Lost"
-    ];
-
-    if (status && !allowedStatuses.includes(status)) {
-        return res.status(400).json({
-            message: "Invalid status."
-        });
-    }
-
-    // Update leads without changing 
-    if (
-        name === undefined &&
-        phone === undefined &&
-        status === undefined
-    ) {
-        return res.status(400).json({
-            message: "At least one field is required to update"
-        });
-    }
-
-    // Update lead details
-    lead.name = name ?? lead.name;
-    lead.phone = phone ?? lead.phone;
-    lead.status = status ?? lead.status;
-
-    res.status(200).json(lead);
 });
 
 // ========================================
 // DELETE LEAD
 // ========================================
 
-app.delete("/api/leads/:id", (req, res) => {
-    const id = Number(req.params.id);
+app.delete("/api/leads/:id", async(req, res) => {
+    try {
+        const id = Number(req.params.id);
 
-    const leadIndex = leads.findIndex((lead) => lead.id === id);
+        const result = await pool.query(
+            `DELETE FROM leads
+             WHERE id = $1
+             RETURNING *`,
+            [id]
+        );
 
-    if (leadIndex === -1) {
-        return res.status(404).json({
-            message: "Lead not found"
+        if (result.rows.length === 0 ) {
+            return res.status(404).json({
+                message: "Lead not found."
+            });
+        }
+
+        res.status(200).json({
+            message:"Lead deleted successfully",
+            lead: result.rows[0]
         });
+
+    } catch (error) {
+        console.log("Database query failed:", error.message);
+
+        res.status(500).json({
+            message: "Failed to delete lead."
+        });
+
     }
-
-    const deletedLead = leads.splice(leadIndex, 1);
-
-    res.status(200).json({
-        message: "Lead deleted successfully",
-        lead: deletedLead[0]
-    });
 });
 
 // ========================================
