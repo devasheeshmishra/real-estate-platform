@@ -1,4 +1,10 @@
-const pool = require("../db");
+const {
+    getLeads: getLeadsFromService,
+    getLeadById: getLeadByIdService,
+    createLead: createLeadService,
+    updateLead: updateLeadService,
+    deleteLead: deleteLeadService
+} = require("../services/leadService");
 
 // ========================================
 // GET ALL LEADS
@@ -35,106 +41,16 @@ const getLeads = async (req, res) => {
             });
         }
 
-        let baseQuery = "SELECT * FROM leads";
-        let countQuery = "SELECT COUNT(*) AS total FROM leads";
+       const result = await getLeadsFromService({
+        status,
+        search,
+        sort,
+        order,
+        pageNumber,
+        limitNumber
+       });
 
-        const conditions = [];
-        const filterValues = [];
-
-        // Status filter
-        if (status) {
-            filterValues.push(status);
-
-            conditions.push(
-                `status ILIKE $${filterValues.length}`
-            );
-        }
-
-        // Search by name or phone
-        if (search) {
-            filterValues.push(`%${search}%`);
-
-            conditions.push(`
-                (
-                    name ILIKE $${filterValues.length}
-                    OR phone LIKE $${filterValues.length}
-                )
-            `);
-        }
-
-        // WHERE clause
-        let whereClause = "";
-
-        if (conditions.length > 0) {
-            whereClause = " WHERE " + conditions.join(" AND ");
-        }
-
-        baseQuery += whereClause;
-        countQuery += whereClause;
-
-        // Sorting
-        const allowedSortFields = [
-            "id",
-            "name",
-            "status"
-        ];
-
-        if (sort) {
-            if (!allowedSortFields.includes(sort)) {
-                return res.status(400).json({
-                    message: "Invalid sort field."
-                });
-            }
-
-            const sortOrder =
-                order && order.toLowerCase() === "desc"
-                    ? "DESC"
-                    : "ASC";
-
-            baseQuery += ` ORDER BY ${sort} ${sortOrder}`;
-        } else {
-            baseQuery += " ORDER BY id ASC";
-        }
-
-        // Pagination
-        const offset = (pageNumber - 1) * limitNumber;
-
-        const dataValues = [
-            ...filterValues,
-            limitNumber,
-            offset
-        ];
-
-        const limitParameter = filterValues.length + 1;
-        const offsetParameter = filterValues.length + 2;
-
-        baseQuery += `
-            LIMIT $${limitParameter}
-            OFFSET $${offsetParameter}
-        `;
-
-        const [dataResult, countResult] = await Promise.all([
-            pool.query(baseQuery, dataValues),
-            pool.query(countQuery, filterValues)
-        ]);
-
-        const totalRecords = Number(
-            countResult.rows[0].total
-        );
-
-        const totalPages = Math.ceil(
-            totalRecords / limitNumber
-        );
-
-        res.status(200).json({
-            data: dataResult.rows,
-            pagination: {
-                page: pageNumber,
-                limit: limitNumber,
-                totalRecords,
-                totalPages
-            }
-        });
+        res.status(200).json(result);
 
     } catch (error) {
         console.error(
@@ -142,8 +58,11 @@ const getLeads = async (req, res) => {
             error.message
         );
 
-        res.status(500).json({
-            message: "Failed to fetch leads"
+        res.status(error.statusCode || 500).json({
+            message:
+                error.statusCode === 400
+                    ? error.message
+                    : "Failed to fetch leads."
         });
     }
 };
@@ -155,17 +74,15 @@ const getLeadById = async (req, res) => {
     try {
         const id = Number(req.params.id);
 
-        const result = await pool.query(
-            "SELECT * FROM leads WHERE id = $1",
-            [id]
-        );
-        if (result.rows.length === 0) {
+        const lead = await getLeadByIdService(id);
+
+        if (!lead) {
             return res.status(404).json({
-                message: "Lead not found"
-            });
+                message: "Lead not found."
+            })
         }
 
-        res.status(200).json(result.rows[0]);
+        res.status(200).json(lead);
     }  catch (error) {
         console.error("Database query failed:", error.message);
 
@@ -181,7 +98,7 @@ const getLeadById = async (req, res) => {
 
 const createLead = async(req, res) => {
     try {
-        const {name, phone, status} = req.body;
+        const {name, phone, status} = req.body || {};
 
         // Validation
         if (!name || !phone || !status) {
@@ -190,20 +107,23 @@ const createLead = async(req, res) => {
             });
         }
 
-        const result = await pool.query(
-            `INSERT INTO leads (name, phone, status)
-            VALUES ($1, $2, $3)
-            RETURNING *`,
-            [name, phone, status]
-        );
+        const lead = await createLeadService({
+            name,
+            phone,
+            status
+        });
 
-        res.status(201).json(result.rows[0]);
+        res.status(201).json(lead);
 
     } catch (error) {
-        console.error("Database query failed:", error.message);
+        console.error(
+            "Database query failed:",
+             error.message
+            );
+
         res.status(500).json({
             message: "Failed to create lead"
-        })
+        });
     }
 };
 
@@ -215,7 +135,7 @@ const updateLead = async (req, res) => {
     try {
         const id = Number(req.params.id);
 
-        const { name, phone, status } = req.body;
+        const { name, phone, status } = req.body || {};
 
         // Check whether at least one field is provided for update
         if (
@@ -259,27 +179,25 @@ const updateLead = async (req, res) => {
             });
         }
 
-        const result = await pool.query(
-            `UPDATE leads
-            SET
-                name = COALESCE($1, name),
-                phone = COALESCE($2, phone),
-                status = COALESCE($3, status)
-            WHERE id = $4
-            RETURNING *`,
-            [name, phone, status, id]
-        );
+        const lead = await updateLeadService(id, {
+            name,
+            phone,
+            status
+        });
 
-        if (result.rows.length === 0 ) {
+        if (!lead) {
             return res.status(404).json({
                 message: "Lead not found."
             });
         }
 
-        res.status(200).json(result.rows[0]);
+        res.status(200).json(lead);
 
     } catch (error) {
-        console.error("Database query failed:", error.message);
+        console.error(
+            "Database query failed:",
+             error.message
+        );
 
         res.status(500).json({
             message: "Failed to update lead"
@@ -296,14 +214,9 @@ const deleteLead = async(req, res) => {
     try {
         const id = Number(req.params.id);
 
-        const result = await pool.query(
-            `DELETE FROM leads
-             WHERE id = $1
-             RETURNING *`,
-            [id]
-        );
+        const lead = await deleteLeadService(id);
 
-        if (result.rows.length === 0 ) {
+        if (!lead) {
             return res.status(404).json({
                 message: "Lead not found."
             });
@@ -311,7 +224,7 @@ const deleteLead = async(req, res) => {
 
         res.status(200).json({
             message:"Lead deleted successfully",
-            lead: result.rows[0]
+            lead
         });
 
     } catch (error) {
